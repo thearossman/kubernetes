@@ -17,21 +17,29 @@ limitations under the License.
 package endpoints
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/pkg/controller/endpoint"
 	"k8s.io/kubernetes/test/integration/framework"
@@ -39,11 +47,100 @@ import (
 	netutils "k8s.io/utils/net"
 )
 
+// Helper for parsing JSON API
+type objectTypeMeta struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	// TODO should we log anything else here?
+}
+
+func getResponseKind(contentType string, body []byte) string {
+	ct := strings.ToLower(contentType)
+	switch {
+	case len(body) == 0:
+		return "no body"
+	case strings.Contains(ct, "json") || json.Valid(body):
+		var m objectTypeMeta
+		if err := json.Unmarshal(body, &m); err == nil && (m.Kind != "" || m.APIVersion != "") {
+			return fmt.Sprintf("apiVersion=%q kind=%q", m.APIVersion, m.Kind)
+		}
+		return "Error parsing JSON"
+	default:
+		// Probably Protobuf. Rely on UTs to configure responses to be JSON.
+		return fmt.Sprintf("non-JSON body")
+	}
+}
+
+var debugHTTPSeq atomic.Uint64
+
+// Log each HTTP exchange
+// Uses Kubernetes built-in test logging infrastructure, which makes
+// it easy to instrument requests and responses without modifying the
+// tests or production code.
+type debugLoggingRoundTripper struct {
+	rt http.RoundTripper
+}
+
+// To get only these outputs when running the test:
+//
+//	go test -v ./test/integration/endpoints -run TestEndpointUpdates -count=1 2>&1
+// | grep -E '^(======== (START|END) CONFLENS OUTPUT ========|HTTP (Request|Response))'
+func (w debugLoggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Sometimes request and response aren't printed right next to each other
+	id := debugHTTPSeq.Add(1)
+	fmt.Printf("\n======== START CONFLENS OUTPUT ========\n")
+	fmt.Printf("HTTP Request API (#%d): %s %s\n", id, req.Method, req.URL.String())
+
+	resp, err := w.rt.RoundTrip(req)
+	if err != nil {
+		fmt.Printf("HTTP Response error (#%d): %v\n", id, err)
+		return resp, err
+	}
+
+	switch {
+	case resp.Body == nil:
+		fmt.Printf("HTTP Response API (#%d): (no body)\n", id)
+	case req.URL.Query().Get("watch") == "true":
+		// TODO: figure out how to handle streams without blocking
+		fmt.Printf("HTTP Response API (#%d): stream (skip)\n", id)
+	default:
+		respBody, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		// Re-populate response body (otherwise test fails later)
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if readErr != nil {
+			fmt.Printf("HTTP Response API (#%d): error reading: %v>\n", id, readErr)
+		} else {
+			contentType := resp.Header.Get("Content-Type")
+			fmt.Printf("HTTP Response API (#%d): %s\n", id, getResponseKind(contentType, respBody))
+		}
+	}
+	fmt.Printf("======== END CONFLENS OUTPUT ========\n\n")
+	return resp, nil
+}
+
+// Force responses to be in JSON
+func registerHTTPTestPrint(t *testing.T, cfg *rest.Config) {
+	t.Helper()
+	// Force responses to be in JSON
+	cfg.ContentType = runtime.ContentTypeJSON
+	cfg.AcceptContentTypes = runtime.ContentTypeJSON
+	// Register
+	t.Helper()
+	if !testing.Verbose() { // Only print if `-v`
+		return
+	}
+	cfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return debugLoggingRoundTripper{rt: rt}
+	})
+}
+
 func TestEndpointUpdates(t *testing.T) {
 	// Disable ServiceAccount admission plugin as we don't have serviceaccount controller running.
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 	defer server.TearDownFn()
 
+	registerHTTPTestPrint(t, server.ClientConfig)
 	client, err := clientset.NewForConfig(server.ClientConfig)
 	if err != nil {
 		t.Fatalf("Error creating clientset: %v", err)
@@ -168,6 +265,7 @@ func TestEndpointWithMultiplePodUpdates(t *testing.T) {
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 	defer server.TearDownFn()
 
+	registerHTTPTestPrint(t, server.ClientConfig)
 	client, err := clientset.NewForConfig(server.ClientConfig)
 	if err != nil {
 		t.Fatalf("Error creating clientset: %v", err)
@@ -311,6 +409,7 @@ func TestExternalNameToClusterIPTransition(t *testing.T) {
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 	defer server.TearDownFn()
 
+	registerHTTPTestPrint(t, server.ClientConfig)
 	client, err := clientset.NewForConfig(server.ClientConfig)
 	if err != nil {
 		t.Fatalf("Error creating clientset: %v", err)
@@ -420,6 +519,7 @@ func TestEndpointWithTerminatingPod(t *testing.T) {
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 	defer server.TearDownFn()
 
+	registerHTTPTestPrint(t, server.ClientConfig)
 	client, err := clientset.NewForConfig(server.ClientConfig)
 	if err != nil {
 		t.Fatalf("Error creating clientset: %v", err)
@@ -613,6 +713,7 @@ func TestEndpointTruncate(t *testing.T) {
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 	defer server.TearDownFn()
 
+	registerHTTPTestPrint(t, server.ClientConfig)
 	client, err := clientset.NewForConfig(server.ClientConfig)
 	if err != nil {
 		t.Fatalf("Error creating clientset: %v", err)

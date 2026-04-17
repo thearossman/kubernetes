@@ -88,34 +88,34 @@ type debugLoggingRoundTripper struct {
 func (w debugLoggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Sometimes request and response aren't printed right next to each other
 	id := debugHTTPSeq.Add(1)
-	fmt.Printf("\n======== START CONFLENS OUTPUT ========\n")
-	fmt.Printf("HTTP Request API (#%d): %s %s\n", id, req.Method, req.URL.String())
+	fmt.Printf("\n======== START CONFLENS OUTPUT (CLIENT) ========\n")
+	fmt.Printf("[Client] HTTP Request API (#%d): %s %s\n", id, req.Method, req.URL.String())
 
 	resp, err := w.rt.RoundTrip(req)
 	if err != nil {
-		fmt.Printf("HTTP Response error (#%d): %v\n", id, err)
+		fmt.Printf("[Client] HTTP Response error (#%d): %v\n", id, err)
 		return resp, err
 	}
 
 	switch {
 	case resp.Body == nil:
-		fmt.Printf("HTTP Response API (#%d): (no body)\n", id)
+		fmt.Printf("[Client] HTTP Response API (#%d): (no body)\n", id)
 	case req.URL.Query().Get("watch") == "true":
 		// TODO: figure out how to handle streams without blocking
-		fmt.Printf("HTTP Response API (#%d): stream (skip)\n", id)
+		fmt.Printf("[Client] HTTP Response API (#%d): stream (skip)\n", id)
 	default:
 		respBody, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		// Re-populate response body (otherwise test fails later)
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		if readErr != nil {
-			fmt.Printf("HTTP Response API (#%d): error reading: %v>\n", id, readErr)
+			fmt.Printf("[Client] HTTP Response API (#%d): error reading: %v>\n", id, readErr)
 		} else {
 			contentType := resp.Header.Get("Content-Type")
-			fmt.Printf("HTTP Response API (#%d): %s\n", id, getResponseKind(contentType, respBody))
+			fmt.Printf("[Client] HTTP Response API (#%d): %s\n", id, getResponseKind(contentType, respBody))
 		}
 	}
-	fmt.Printf("======== END CONFLENS OUTPUT ========\n\n")
+	fmt.Printf("======== END CONFLENS OUTPUT (CLIENT) ========\n\n")
 	return resp, nil
 }
 

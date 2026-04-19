@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httputil"
 	"reflect"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -339,6 +340,13 @@ func transformResponseObject(ctx context.Context, scope *RequestScope, req *http
 		return
 	}
 	kind, serializer, _ := targetEncodingForTransform(scope, mediaType, req)
+	reqDump, dumpErr := httputil.DumpRequest(req, false)
+	if dumpErr != nil {
+		fmt.Printf("transformResponseObject: could not dump request: %v\n", dumpErr)
+	} else {
+		fmt.Printf("transformResponseObject: request:\n%s", reqDump)
+	}
+	fmt.Printf("transformResponseObject: negotiated write GVK=%s\n", kind.String())
 	responsewriters.WriteObjectNegotiated(serializer, scope, kind.GroupVersion(), w, req, statusCode, obj, false)
 }
 

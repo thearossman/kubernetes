@@ -339,6 +339,16 @@ func transformResponseObject(ctx context.Context, scope *RequestScope, req *http
 		return
 	}
 	kind, serializer, _ := targetEncodingForTransform(scope, mediaType, req)
+
+	if id, ok := endpointsrequest.ContextIDFrom(ctx); ok {
+		fmt.Printf("CONFLENS: Response: gvk: %s, objectType: %T, statusCode: %d, contextID=%d\n",
+			kind.String(),
+			fmt.Sprintf("%T", obj),
+			statusCode,
+			id,
+		)
+	}
+
 	responsewriters.WriteObjectNegotiated(serializer, scope, kind.GroupVersion(), w, req, statusCode, obj, false)
 }
 

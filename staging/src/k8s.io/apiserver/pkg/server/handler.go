@@ -18,13 +18,11 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/http"
 	rt "runtime"
 	"sort"
 	"strings"
-	"sync/atomic"
 
 	"github.com/emicklei/go-restful/v3"
 	"k8s.io/klog/v2"
@@ -33,24 +31,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
+	endpointsrequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/server/mux"
 )
-
-type requestContextKey int
-
-const (
-	apiRequestIDKey requestContextKey = iota
-)
-
-var apiserverRequestIDCounter uint64
-
-func setAPIRequestID(ctx context.Context) context.Context {
-	if v := ctx.Value(apiRequestIDKey); v != nil {
-		return ctx
-	}
-	id := atomic.AddUint64(&apiserverRequestIDCounter, 1)
-	return context.WithValue(ctx, apiRequestIDKey, id)
-}
 
 // APIServerHandlers holds the different http.Handlers used by the API server.
 // This includes the full handler chain, the director (which chooses between gorestful and nonGoRestful,
@@ -203,8 +186,8 @@ func serviceErrorHandler(s runtime.NegotiatedSerializer, serviceErr restful.Serv
 
 // ServeHTTP makes it an http.Handler
 func (a *APIServerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	r = r.WithContext(setAPIRequestID(r.Context()))
-	// TODO make this a real logger
-	fmt.Printf("CONFLENS:: request: %s %s, ID: %d\n", r.Method, r.URL.Path, r.Context().Value(apiRequestIDKey))
+	ctx, id := endpointsrequest.WithContextID(r.Context())
+	r = r.WithContext(ctx)
+	fmt.Printf("CONFLENS: contextID=%d method=%s path=%s\n", id, r.Method, r.URL.Path)
 	a.FullHandlerChain.ServeHTTP(w, r)
 }
